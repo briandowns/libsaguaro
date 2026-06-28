@@ -49,7 +49,6 @@ typedef saguaro_id_t saguaro_permission_id_t;
 
 typedef enum {
     SAGUARO_OK = 0,
-    SAGUARO_ERR,
     SAGUARO_ERR_NOMEM,
     SAGUARO_ERR_EXISTS,
     SAGUARO_ERR_NOT_FOUND,
@@ -83,10 +82,16 @@ saguaro_result_t
 saguaro_unassign_role(saguaro_t *ctx, saguaro_subject_id_t subject_id,
                       saguaro_role_id_t role_id);
 
+/**
+ * Assign role inheritance.
+ */
 saguaro_result_t
 saguaro_assign_role_inheritance(saguaro_t *ctx,
     saguaro_role_id_t parent_role_id, saguaro_role_id_t child_role_id);
 
+/**
+ * Unassign role inheritance.
+ */
 saguaro_result_t
 saguaro_unassign_role_inheritance(saguaro_t *ctx,
     saguaro_role_id_t parent_role_id, saguaro_role_id_t child_role_id);

@@ -30,6 +30,10 @@
 
 #include "saguaro.h"
 
+#ifndef SAGUARO_MAX_ROLE_DEPTH
+#define SAGUARO_MAX_ROLE_DEPTH 64
+#endif
+
 struct saguaro_subject_role {
     saguaro_subject_id_t subject_id;
     saguaro_role_id_t role_id;
@@ -50,14 +54,21 @@ struct saguaro {
     struct saguaro_role_permission *role_permissions;
     struct saguaro_role_inheritance *role_inheritance;
     size_t subject_role_count;
+    size_t subject_role_cap;
     size_t role_permission_count;
+    size_t role_permission_cap;
     size_t role_inheritance_count;
+    size_t role_inheritance_cap;
 };
 
 static bool
 role_inheritance_exists(const saguaro_t *ctx, saguaro_role_id_t parent_role_id,
     saguaro_role_id_t child_role_id)
 {
+    if (ctx == NULL) {
+        return false;
+    }
+
     for (size_t i = 0; i < ctx->role_inheritance_count; i++) {
         if (ctx->role_inheritance[i].parent_role_id == parent_role_id &&
             ctx->role_inheritance[i].child_role_id == child_role_id) {
@@ -72,6 +83,10 @@ static bool
 role_reaches(const saguaro_t *ctx, saguaro_role_id_t start_role_id,
     saguaro_role_id_t target_role_id)
 {
+    if (ctx == NULL) {
+        return false;
+    }
+
     if (start_role_id == target_role_id) {
         return true;
     }
@@ -93,7 +108,16 @@ role_reaches(const saguaro_t *ctx, saguaro_role_id_t start_role_id,
 saguaro_t*
 saguaro_init(void)
 {
-    return calloc(1, sizeof(saguaro_t));
+    saguaro_t *ctx = calloc(1, sizeof(saguaro_t));
+    if (ctx == NULL) {
+        return NULL;
+    }
+
+    ctx->subject_roles = NULL;
+    ctx->role_permissions = NULL;
+    ctx->role_inheritance = NULL;
+
+    return ctx;
 }
 
 static bool
@@ -141,6 +165,7 @@ saguaro_free(saguaro_t *ctx)
 
     free(ctx->subject_roles);
     free(ctx->role_permissions);
+    free(ctx->role_inheritance);
     free(ctx);
 }
 
@@ -156,14 +181,19 @@ saguaro_assign_role(saguaro_t *ctx, saguaro_subject_id_t subject_id,
         return SAGUARO_ERR_EXISTS;
     }
 
-    struct saguaro_subject_role *tmp = realloc(ctx->subject_roles,
-        sizeof(*tmp)*(ctx->subject_role_count+1));
+    if (ctx->subject_role_count == ctx->subject_role_cap) {
+        size_t new_cap = ctx->subject_role_cap == 0 ? 8
+            : ctx->subject_role_cap * 2;
+        struct saguaro_subject_role *tmp = reallocarray(ctx->subject_roles,
+            new_cap, sizeof(*tmp));
+        if (tmp == NULL) {
+            return SAGUARO_ERR_NOMEM;
+        }
 
-    if (tmp == NULL) {
-        return SAGUARO_ERR_NOMEM;
+        ctx->subject_roles = tmp;
+        ctx->subject_role_cap = new_cap;
     }
 
-    ctx->subject_roles = tmp;
     ctx->subject_roles[ctx->subject_role_count].subject_id = subject_id;
     ctx->subject_roles[ctx->subject_role_count].role_id = role_id;
     ctx->subject_role_count++;
@@ -213,17 +243,23 @@ saguaro_assign_role_inheritance(saguaro_t *ctx,
         return SAGUARO_ERR_CYCLE;
     }
 
-    struct saguaro_role_inheritance *tmp = realloc(ctx->role_inheritance,
-        sizeof(*tmp)*(ctx->role_inheritance_count+1));
-    if (tmp == NULL) {
-        return SAGUARO_ERR_NOMEM;
+    if (ctx->role_inheritance_count == ctx->role_inheritance_cap) {
+        size_t new_cap = ctx->role_inheritance_cap == 0 ? 8
+            : ctx->role_inheritance_cap * 2;
+        struct saguaro_role_inheritance *tmp = reallocarray(ctx->role_inheritance,
+            new_cap, sizeof(*tmp));
+        if (tmp == NULL) {
+            return SAGUARO_ERR_NOMEM;
+        }
+
+        ctx->role_inheritance = tmp;
+        ctx->role_inheritance_cap = new_cap;
     }
 
-    ctx->role_inheritance = tmp;
-    ctx->role_inheritance[
-        ctx->role_inheritance_count].parent_role_id = parent_role_id;
-    ctx->role_inheritance[
-        ctx->role_inheritance_count].child_role_id = child_role_id;
+    ctx->role_inheritance[ctx->role_inheritance_count].parent_role_id =
+        parent_role_id;
+    ctx->role_inheritance[ctx->role_inheritance_count].child_role_id =
+    child_role_id;
     ctx->role_inheritance_count++;
 
     return SAGUARO_OK;
@@ -256,36 +292,6 @@ saguaro_unassign_role_inheritance(saguaro_t *ctx,
     return SAGUARO_ERR_NOT_FOUND;
 }
 
-static bool
-role_has_permission(const saguaro_t *ctx, saguaro_role_id_t role_id,
-    saguaro_permission_id_t permission_id)
-{
-    for (size_t i = 0; i < ctx->role_permission_count; i++) {
-        if (ctx->role_permissions[i].role_id ==
-                role_id &&
-            ctx->role_permissions[i].permission_id ==
-                permission_id) {
-            return true;
-        }
-    }
-
-    for (size_t i = 0; i < ctx->role_inheritance_count; i++) {
-        if (ctx->role_inheritance[i].parent_role_id !=
-                role_id) {
-            continue;
-        }
-
-        if (role_has_permission(
-                ctx,
-                ctx->role_inheritance[i].child_role_id,
-                permission_id)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 saguaro_result_t
 saguaro_assign_permission(saguaro_t *ctx, saguaro_role_id_t role_id,
                           saguaro_permission_id_t permission_id)
@@ -298,13 +304,19 @@ saguaro_assign_permission(saguaro_t *ctx, saguaro_role_id_t role_id,
         return SAGUARO_ERR_EXISTS;
     }
 
-    struct saguaro_role_permission *tmp = realloc(ctx->role_permissions,
-        sizeof(*tmp)*(ctx->role_permission_count+1));
-    if (tmp == NULL) {
-        return SAGUARO_ERR_NOMEM;
+    if (ctx->role_permission_count == ctx->role_permission_cap) {
+        size_t new_cap = ctx->role_permission_cap == 0 ? 8
+            : ctx->role_permission_cap * 2;
+        struct saguaro_role_permission *tmp = reallocarray(
+            ctx->role_permissions, new_cap, sizeof(*tmp));
+        if (tmp == NULL) {
+            return SAGUARO_ERR_NOMEM;
+        }
+
+        ctx->role_permissions = tmp;
+        ctx->role_permission_cap = new_cap;
     }
 
-    ctx->role_permissions = tmp;
     ctx->role_permissions[ctx->role_permission_count].role_id = role_id;
     ctx->role_permissions[ctx->role_permission_count].permission_id =
         permission_id;
@@ -336,22 +348,67 @@ saguaro_unassign_permission(saguaro_t *ctx, saguaro_role_id_t role_id,
 }
 
 bool
-saguaro_is_authorized(const saguaro_t *ctx, saguaro_subject_id_t subject_id,
+saguaro_is_authorized(const saguaro_t *ctx,
+    saguaro_subject_id_t subject_id,
     saguaro_permission_id_t permission_id)
 {
     if (ctx == NULL) {
         return false;
     }
 
+    saguaro_role_id_t queue[SAGUARO_MAX_ROLE_DEPTH];
+    size_t head = 0;
+    size_t tail = 0;
+
     for (size_t i = 0; i < ctx->subject_role_count; i++) {
-        if (ctx->subject_roles[i].subject_id !=
-                subject_id) {
+        if (ctx->subject_roles[i].subject_id != subject_id) {
             continue;
         }
 
-        if (role_has_permission(ctx, ctx->subject_roles[i].role_id,
-            permission_id)) {
-            return true;
+        saguaro_role_id_t rid = ctx->subject_roles[i].role_id;
+        bool dup = false;
+
+        for (size_t j = 0; j < tail; j++) {
+            if (queue[j] == rid) {
+                dup = true;
+                break;
+            }
+        }
+
+        if (!dup && tail < SAGUARO_MAX_ROLE_DEPTH) {
+            queue[tail++] = rid;
+        }
+    }
+
+    while (head < tail) {
+        saguaro_role_id_t role = queue[head++];
+
+        for (size_t i = 0; i < ctx->role_permission_count; i++) {
+            if (ctx->role_permissions[i].role_id == role &&
+                ctx->role_permissions[i].permission_id == permission_id) {
+                return true;
+            }
+        }
+
+        // queue inherited child roles not yet in the queue
+        for (size_t i = 0; i < ctx->role_inheritance_count; i++) {
+            if (ctx->role_inheritance[i].parent_role_id != role) {
+                continue;
+            }
+
+            saguaro_role_id_t child = ctx->role_inheritance[i].child_role_id;
+            bool dup = false;
+
+            for (size_t j = 0; j < tail; j++) {
+                if (queue[j] == child) {
+                    dup = true;
+                    break;
+                }
+            }
+
+            if (!dup && tail < SAGUARO_MAX_ROLE_DEPTH) {
+                queue[tail++] = child;
+            }
         }
     }
 
